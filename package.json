@@ -17,6 +17,7 @@
     "express": "^5.2.1",
     "mongodb": "^7.1.0",
     "sslcommerz-lts": "^1.2.0",
-    "sslcommerz-nodejs": "^1.0.8"
+    "sslcommerz-nodejs": "^1.0.8",
+    "vercel": "^50.37.2"
   }
 }
