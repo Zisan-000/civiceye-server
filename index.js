@@ -8,6 +8,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5174",
+      //"https://your-site-name.netlify.app" // Add this AFTER you get your Netlify link
+    ],
+    credentials: true,
+  }),
+);
 
 const port = process.env.PORT || 1069; // Changed to 1069 as per our previous setup
 
