@@ -11,14 +11,14 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: [
-      "http://localhost:5174",
+      "http://localhost:5173",
       //"https://your-site-name.netlify.app" // Add this AFTER you get your Netlify link
     ],
     credentials: true,
   }),
 );
 
-const port = process.env.PORT || 1069; // Changed to 1069 as per our previous setup
+const port = process.env.PORT || 1069;
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.tfpkery.mongodb.net/?appName=Cluster0`;
 
@@ -30,7 +30,6 @@ const client = new MongoClient(uri, {
   },
 });
 
-// --- GLOBAL VARIABLES (Scope Fix) ---
 let complaintsCollection;
 let usersCollection;
 let ordersCollection;
@@ -49,7 +48,6 @@ async function run() {
     ordersCollection = database.collection("orders");
 
     // --- ADD THE INDEXES HERE ---
-    // This ensures they are created once the database is connected
     await complaintsCollection.createIndex(
       { location: "2d" },
       { sparse: true },
@@ -59,27 +57,6 @@ async function run() {
       description: "text",
     });
 
-    // const updateOldComplaints = async () => {
-    //   const result = await complaintsCollection.updateMany(
-    //     { flaggedBy: { $exists: false } }, // Find documents without this array
-    //     {
-    //       $set: {
-    //         flaggedBy: [],
-    //         flags: 0,
-    //         upvotedBy: [],
-    //         priority: "Medium",
-    //       },
-    //     },
-    //   );
-    //   if (result.modifiedCount > 0) {
-    //     console.log(
-    //       `Successfully updated ${result.modifiedCount} old reports with flagging fields.`,
-    //     );
-    //   }
-    // };
-
-    // await updateOldComplaints();
-
     await client.db("admin").command({ ping: 1 });
     console.log("Successfully connected to MongoDB and created Indexes!");
   } catch (error) {
@@ -87,6 +64,42 @@ async function run() {
   }
 }
 run().catch(console.dir);
+
+const calculateUrgency = (prob) => {
+  const now = new Date();
+  const cat = (prob.category || "").toLowerCase();
+  const desc = (prob.description || "").toLowerCase();
+
+  let keywordWeight = 10;
+  // Use the specific weights defined in your Module 2 requirements
+  if (cat === "fire hazard") keywordWeight = 40;
+  else if (cat === "electrical") keywordWeight = 35;
+  else if (cat === "water leak" || cat === "water") keywordWeight = 25;
+  else if (cat.includes("garbage") || cat === "environment") keywordWeight = 15;
+  else if (cat === "road" || cat.includes("pothole")) keywordWeight = 15;
+  else {
+    // Fallback to keyword description check
+    if (desc.includes("fire") || desc.includes("smoke")) keywordWeight = 40;
+    else if (desc.includes("electric") || desc.includes("spark"))
+      keywordWeight = 35;
+    else if (desc.includes("flood") || desc.includes("leak"))
+      keywordWeight = 25;
+    else if (desc.includes("trash") || desc.includes("waste"))
+      keywordWeight = 15;
+  }
+
+  const upvotes = prob.upvotes || 0;
+  const createdAtDate = prob.createdAt ? new Date(prob.createdAt) : now;
+  const hoursSincePosted = Math.max(
+    0,
+    (now - createdAtDate) / (1000 * 60 * 60),
+  );
+  const cappedHours = Math.min(hoursSincePosted, 48);
+
+  // Requirement: (Keyword_Weight * 2) + (Upvote_Count * 1.5) + (Hours_Since_Posted * 0.5)
+  const rawScore = keywordWeight * 2 + upvotes * 1.5 + cappedHours * 0.5;
+  return Math.min(100, Math.max(1, Math.round(rawScore)));
+};
 
 // --- API ENDPOINTS ---
 
@@ -101,7 +114,6 @@ app.get("/api/users/:email", async (req, res) => {
     let user = await usersCollection.findOne({ email });
 
     if (!user) {
-      // Create user on the fly if they don't exist
       const newUser = {
         email,
         trustScore: 100,
@@ -117,11 +129,16 @@ app.get("/api/users/:email", async (req, res) => {
   }
 });
 
-// 2. Submit Complaint + Reward Trust Score
+// 1. Submit Complaint Endpoint (Zobaer's Module: Duplicate Detection & Auto-Categorization) [cite: 26, 67]
 app.post("/api/complaints", async (req, res) => {
   try {
     const complaintData = req.body;
     const { userEmail, location, address, category } = complaintData;
+
+    // Standardize input: Map Report uses 'description', Smart Form uses 'additionalNotes' [cite: 18, 22]
+    const userNotes =
+      complaintData.description || complaintData.additionalNotes || "";
+    const desc = userNotes.toLowerCase();
 
     if (!userEmail) {
       return res
@@ -129,8 +146,8 @@ app.post("/api/complaints", async (req, res) => {
         .send({ success: false, error: "User Email is required" });
     }
 
+    // --- TRUST SCORE CHECK (Shah Ahafik Arman's Module) [cite: 23, 25] ---
     const dbUser = await usersCollection.findOne({ email: userEmail });
-
     if (dbUser && dbUser.trustScore < 30) {
       return res.status(403).send({
         success: false,
@@ -139,11 +156,76 @@ app.post("/api/complaints", async (req, res) => {
       });
     }
 
-    let duplicate = null;
+    // --- AUTO-CATEGORIZATION & URGENCY WEIGHT (Zobaer Mahmud Zisan's Module) [cite: 20, 42, 67, 68] ---
+    let finalCategory = category || "General";
+    let keywordWeight = 10; // Default weight
 
+    // Logic to determine category and urgency weight from keywords
+    if (
+      finalCategory.toLowerCase() === "general" ||
+      finalCategory === "General"
+    ) {
+      if (
+        desc.includes("fire") ||
+        desc.includes("smoke") ||
+        desc.includes("burn")
+      ) {
+        finalCategory = "Fire Hazard";
+        keywordWeight = 40;
+      } else if (
+        desc.includes("electric") ||
+        desc.includes("wire") ||
+        desc.includes("spark")
+      ) {
+        finalCategory = "Electrical";
+        keywordWeight = 35;
+      } else if (
+        desc.includes("flood") ||
+        desc.includes("water") ||
+        desc.includes("leak") ||
+        desc.includes("pipe")
+      ) {
+        finalCategory = "Water Leak";
+        keywordWeight = 25;
+      } else if (
+        desc.includes("garbage") ||
+        desc.includes("trash") ||
+        desc.includes("waste")
+      ) {
+        finalCategory = "Environment";
+        keywordWeight = 15;
+      } else if (
+        desc.includes("pothole") ||
+        desc.includes("road") ||
+        desc.includes("broken")
+      ) {
+        finalCategory = "Road/Infrastructure";
+        keywordWeight = 15;
+      }
+    } else {
+      // Assign weight even if category was manually selected
+      const cat = finalCategory.toLowerCase();
+      if (cat.includes("fire") || cat.includes("electrical"))
+        keywordWeight = 40;
+      else if (cat.includes("water") || cat.includes("leak"))
+        keywordWeight = 25;
+      else if (cat.includes("environment") || cat.includes("road"))
+        keywordWeight = 15;
+    }
+
+    // --- SEVERITY CALCULATION (Initial)  ---
+    // At creation: Upvotes = 0, Hours_Since_Posted = 0
+    // Formula: (Keyword_Weight * 2) + (Upvotes * 1.5) + (Hours * 0.5)
+    let initialUrgencyScore = Math.min(
+      100,
+      Math.max(1, Math.round(keywordWeight * 2)),
+    );
+
+    // --- GEOSPATIAL DUPLICATE CHECK (Zobaer Mahmud Zisan's Module) [cite: 26, 28] ---
+    let duplicate = null;
     if (location && location.lat) {
       duplicate = await complaintsCollection.findOne({
-        category: category,
+        category: finalCategory,
         "location.lat": {
           $gte: location.lat - 0.0001,
           $lte: location.lat + 0.0001,
@@ -152,14 +234,14 @@ app.post("/api/complaints", async (req, res) => {
           $gte: location.lng - 0.0001,
           $lte: location.lng + 0.0001,
         },
-        status: { $ne: "resolved" },
+        status: { $nin: ["Resolved", "Closed"] },
       });
     } else if (address) {
       const addressKey = address.split(",")[0].trim();
       duplicate = await complaintsCollection.findOne({
-        category: category,
+        category: finalCategory,
         address: { $regex: addressKey, $options: "i" },
-        status: { $ne: "resolved" },
+        status: { $nin: ["Resolved", "Closed"] },
       });
     }
 
@@ -173,17 +255,31 @@ app.post("/api/complaints", async (req, res) => {
       });
     }
 
+    // --- DATABASE INSERTION ---
     const result = await complaintsCollection.insertOne({
       ...complaintData,
-      status: "pending",
+      description: userNotes,
+      category: finalCategory,
+      status: "Open", // Default starting state [cite: 32]
+      urgencyScore: initialUrgencyScore, // Pre-calculated severity
+      beforeImage: complaintData.beforeImage || null,
+      afterImage: null,
       upvotes: 0,
       flags: 0,
-      priority: "Medium",
+      priority: initialUrgencyScore > 50 ? "High" : "Medium",
+      timeline: [
+        {
+          status: "Reported",
+          time: new Date(),
+          message: "Issue reported by citizen and logged into the system.",
+        },
+      ],
       upvotedBy: [],
       flaggedBy: [],
       createdAt: new Date(),
     });
 
+    // --- REWARD TRUST SCORE (Shah Ahafik Arman's Module) [cite: 63] ---
     const updateResult = await usersCollection.updateOne(
       { email: userEmail },
       { $inc: { trustScore: 5 } },
@@ -192,7 +288,7 @@ app.post("/api/complaints", async (req, res) => {
     if (updateResult.matchedCount === 0) {
       await usersCollection.insertOne({
         email: userEmail,
-        trustScore: 105,
+        trustScore: 105, // Start with base 100 + 5 reward [cite: 24, 63]
         name: complaintData.userName || "Citizen",
         createdAt: new Date(),
       });
@@ -201,7 +297,7 @@ app.post("/api/complaints", async (req, res) => {
     res.status(201).send({
       success: true,
       insertedId: result.insertedId,
-      message: "Reported! Trust Score increased.",
+      message: `Reported as ${finalCategory}! Initial Urgency: ${initialUrgencyScore}`,
     });
   } catch (error) {
     console.error("Backend Error:", error);
@@ -213,8 +309,6 @@ app.post("/api/complaints", async (req, res) => {
 app.post("/api/add-complaint-urgent", async (req, res) => {
   try {
     const complaint = req.body;
-
-    // Logic: (Keywords Count * 2) + (Upvotes * 1.5)
     const keywordWeight =
       (Array.isArray(complaint.keywords) ? complaint.keywords.length : 0) * 2;
     const upvoteWeight = (complaint.upvotes || 0) * 1.5;
@@ -242,6 +336,25 @@ app.get("/api/urgent-reports", async (req, res) => {
   }
 });
 
+// 6. Get Single Complaint by ID (For Details Page)
+// Example single complaint route
+app.get("/api/complaints/:id", async (req, res) => {
+  try {
+    const prob = await complaintsCollection.findOne({
+      _id: new ObjectId(req.params.id),
+    });
+    if (!prob) return res.status(404).send({ message: "Not found" });
+
+    // Use the same function to get the consistent score
+    res.send({
+      ...prob,
+      urgencyScore: calculateUrgency(prob),
+    });
+  } catch (error) {
+    res.status(500).send({ error: error.message });
+  }
+});
+
 // PATCH route to increase upvotes
 app.patch("/api/complaints/upvote/:id", async (req, res) => {
   try {
@@ -254,21 +367,18 @@ app.patch("/api/complaints/upvote/:id", async (req, res) => {
     if (!complaint)
       return res.status(404).send({ success: false, message: "Not found" });
 
-    // 1. Block if already upvoted
     if (complaint.upvotedBy?.includes(userEmail)) {
       return res
         .status(400)
         .send({ success: false, message: "Already upvoted!" });
     }
 
-    // 2. Check if they are switching from a Flag to an Upvote
     const wasFlagged = complaint.flaggedBy?.includes(userEmail);
     const flagDecrement = wasFlagged ? -1 : 0;
 
     const newUpvoteCount = (complaint.upvotes || 0) + 1;
     const newFlagCount = (complaint.flags || 0) + flagDecrement;
 
-    // 3. Logic: Recalculate Priority based on new counts
     let newPriority = "Medium";
     if (newUpvoteCount > 10) newPriority = "High";
     if (newFlagCount > 5) newPriority = "Low";
@@ -276,10 +386,10 @@ app.patch("/api/complaints/upvote/:id", async (req, res) => {
     await complaintsCollection.updateOne(
       { _id: new ObjectId(id) },
       {
-        $inc: { upvotes: 1, flags: flagDecrement }, // Atomic increment/decrement
+        $inc: { upvotes: 1, flags: flagDecrement },
         $set: { priority: newPriority },
-        $addToSet: { upvotedBy: userEmail }, // Add to upvoters
-        $pull: { flaggedBy: userEmail }, // Remove from flaggers
+        $addToSet: { upvotedBy: userEmail },
+        $pull: { flaggedBy: userEmail },
       },
     );
 
@@ -303,17 +413,16 @@ app.patch("/api/users/restore-score/:email", async (req, res) => {
   );
   res.send({ success: true, message: "Score restored!" });
 });
+
 // User-Specific Report Count & Upvotes
 app.get("/api/user-stats/:email", async (req, res) => {
   try {
     const { email } = req.params;
 
-    // 1. Count how many reports this email has submitted
     const reportCount = await complaintsCollection.countDocuments({
       userEmail: email,
     });
 
-    // 2. Sum up all upvotes from all reports submitted by this email
     const upvoteData = await complaintsCollection
       .aggregate([
         { $match: { userEmail: email } },
@@ -331,6 +440,7 @@ app.get("/api/user-stats/:email", async (req, res) => {
     res.status(500).send({ error: error.message });
   }
 });
+
 // PATCH route to flag a complaint
 app.patch("/api/complaints/flag/:id", async (req, res) => {
   try {
@@ -343,21 +453,18 @@ app.patch("/api/complaints/flag/:id", async (req, res) => {
     if (!complaint)
       return res.status(404).send({ success: false, message: "Not found" });
 
-    // 1. Block if already flagged
     if (complaint.flaggedBy?.includes(userEmail)) {
       return res
         .status(400)
         .send({ success: false, message: "Already flagged!" });
     }
 
-    // 2. Check if they are switching from an Upvote to a Flag
     const wasUpvoted = complaint.upvotedBy?.includes(userEmail);
     const upvoteDecrement = wasUpvoted ? -1 : 0;
 
     const newFlagCount = (complaint.flags || 0) + 1;
     const newUpvoteCount = (complaint.upvotes || 0) + upvoteDecrement;
 
-    // 3. Logic: Recalculate Priority
     let newPriority = "Medium";
     if (newFlagCount > 5) newPriority = "Low";
     if (newUpvoteCount > 10) newPriority = "High";
@@ -384,11 +491,9 @@ app.patch("/api/complaints/flag/:id", async (req, res) => {
 });
 
 // Payment Integration with SSLCommerz
-
 app.post("/payment", async (req, res) => {
   const order = req.body;
-  // console.log(order.userEmail);
-  const current_tran_id = new ObjectId().toString(); // Generate a unique transaction ID
+  const current_tran_id = new ObjectId().toString();
 
   await ordersCollection.insertOne({
     tran_id: current_tran_id,
@@ -406,7 +511,7 @@ app.post("/payment", async (req, res) => {
     fail_url: "http://localhost:1069/payment/fail",
     cancel_url: "http://localhost:1069/payment/cancel",
     ipn_url: "http://localhost:1069/ipn",
-    shipping_method: "No", // No shipping for a fine
+    shipping_method: "No",
     product_name: "Trust Score Fine",
     product_category: "Service",
     product_profile: "general",
@@ -419,22 +524,17 @@ app.post("/payment", async (req, res) => {
   };
   const sslcz = new SSLCommerzPayment(store_id, store_passwd, is_live);
   sslcz.init(data).then((apiResponse) => {
-    // Redirect logic: SSLCommerz gives a URL, we send it back to frontend
     let GatewayPageURL = apiResponse.GatewayPageURL;
     res.send({ url: GatewayPageURL });
     console.log("Redirecting user to:", GatewayPageURL);
   });
-
-  console.log("Payment data received:", data);
 });
-// Success callback route
+
 app.post("/payment/success/:tranId", async (req, res) => {
   try {
-    // 1. GET IT FROM THE URL (the :tranId part)
     const { tranId } = req.params;
     const paymentData = req.body;
 
-    // 2. USE 'tranId' TO FIND THE ORDER
     const orderRecord = await ordersCollection.findOne({ tran_id: tranId });
 
     if (!orderRecord) {
@@ -443,7 +543,6 @@ app.post("/payment/success/:tranId", async (req, res) => {
     }
 
     if (paymentData.status === "VALID") {
-      // 3. USE THE EMAIL FROM THE DATABASE RECORD
       await usersCollection.updateOne(
         { email: orderRecord.userEmail },
         { $set: { trustScore: 80 } },
@@ -461,49 +560,91 @@ app.post("/payment/success/:tranId", async (req, res) => {
     res.redirect("http://localhost:5173/profile?status=error");
   }
 });
-// Failure callback route
+
 app.post("/payment/fail", async (req, res) => {
   const paymentData = req.body;
-
   console.log("❌ Payment Failed. Reason:", paymentData.error);
-  res.redirect("http://localhost:5173/profile?status=failed");
-  // Optional: Update the order status in your database if you have the tran_id
+
   if (paymentData.tran_id) {
     await ordersCollection.updateOne(
       { tran_id: paymentData.tran_id },
       { $set: { status: "failed", error: paymentData.error } },
     );
   }
-
-  // Redirect back to your React Profile with a failure status
   res.redirect("http://localhost:5173/profile?status=failed");
 });
-// Cancel callback route
-app.post("/payment/cancel", async (req, res) => {
-  // Triggered if the user closes the window or clicks "Back"
-  console.log("⚠️ Payment Cancelled by user");
 
+app.post("/payment/cancel", async (req, res) => {
+  console.log("⚠️ Payment Cancelled by user");
   res.redirect("http://localhost:5173/profile?status=cancelled");
 });
 
-// Admin Dashboard
-// 6. Get All Complaints (For Admin Dashboard)
+const CATEGORY_WEIGHTS = {
+  "Fire Hazard": 40,
+  Electrical: 35,
+  "Water Leak": 25,
+  Environment: 15,
+  "Broken Bench": 5,
+  General: 10,
+};
+
+// 6. Get All Complaints & Dynamically Calculate Urgency (Module 2)
 app.get("/api/complaints", async (req, res) => {
   try {
-    // .sort({ upvotes: -1 }) puts the most upvoted items first
-    const result = await complaintsCollection
-      .find()
-      .sort({ upvotes: -1 })
-      .toArray();
-    res.send(result);
+    const complaints = await complaintsCollection.find().toArray();
+    const complaintsWithUrgency = complaints.map((prob) => ({
+      ...prob,
+      urgencyScore: calculateUrgency(prob),
+    }));
+    res.send(complaintsWithUrgency);
   } catch (error) {
     res.status(500).send({ error: error.message });
   }
 });
-// List of authorized admin emails
-const ADMIN_EMAILS = ["ak01739394811@gmail.com", "your-email@gmail.com"];
 
-// 1. UPDATE STATUS (Admin Only)
+const ADMIN_EMAILS = [
+  "ak01739394811@gmail.com",
+  "jannatul.ferdous17@g.bracu.ac.bd",
+];
+
+// --- WORKER IMAGE UPLOAD ROUTE ---
+app.patch("/api/complaints/update-images/:id", async (req, res) => {
+  const { id } = req.params;
+  const { beforeImage, afterImage } = req.body;
+
+  let newStatus = "";
+  let message = "";
+
+  if (beforeImage && !afterImage) {
+    newStatus = "Work in Progress"; //
+    message = "Worker arrived at the location.";
+  } else if (afterImage) {
+    newStatus = "Resolved"; //
+    message = "Worker completed the repair and submitted proof.";
+  }
+
+  const timelineEntry = {
+    status: newStatus,
+    time: new Date(), // This is where the "Time" is grabbed
+    message: message,
+  };
+
+  await complaintsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    {
+      $set: {
+        status: newStatus,
+        ...(beforeImage && { beforeImage }),
+        ...(afterImage && { afterImage }),
+      },
+      $push: { timeline: timelineEntry }, // Adds a new step to the 'Pizza Tracker'
+    },
+  );
+
+  res.send({ success: true });
+});
+
+// 1. UPDATE STATUS (Admin Only) - Legacy route (Keep if used elsewhere, but ideally use /status/:id below)
 app.patch("/api/complaints/:id", async (req, res) => {
   const { id } = req.params;
   const { status, adminEmail } = req.body;
@@ -523,7 +664,7 @@ app.patch("/api/complaints/:id", async (req, res) => {
 // 2. DELETE COMPLAINT (Admin Only)
 app.delete("/api/complaints/:id", async (req, res) => {
   const { id } = req.params;
-  const adminEmail = req.query.email; // Passed as a query param
+  const adminEmail = req.query.email;
 
   if (!ADMIN_EMAILS.includes(adminEmail)) {
     return res.status(403).send({ message: "Unauthorized" });
@@ -534,22 +675,18 @@ app.delete("/api/complaints/:id", async (req, res) => {
   });
   res.send(result);
 });
+
 // --- 3. ADMIN MANUAL UPVOTE OVERRIDE ---
 app.patch("/api/complaints/admin-upvote/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { newCount, adminEmail } = req.body;
 
-    // Security check
-    const ADMIN_EMAILS = ["ak01739394811@gmail.com", "your-email@gmail.com"];
     if (!ADMIN_EMAILS.includes(adminEmail)) {
       return res.status(403).send({ message: "Unauthorized" });
     }
 
     const count = parseInt(newCount);
-
-    // CSE Logic: If admin sets upvotes > 10, set priority to High
-    // Otherwise, keep it Medium (unless it's already flagged as Low)
     let newPriority = count > 10 ? "High" : "Medium";
 
     const result = await complaintsCollection.updateOne(
@@ -569,15 +706,11 @@ app.patch("/api/complaints/admin-flag/:id", async (req, res) => {
     const { id } = req.params;
     const { newCount, adminEmail } = req.body;
 
-    // Security check
-    const ADMIN_EMAILS = ["ak01739394811@gmail.com", "your-email@gmail.com"];
     if (!ADMIN_EMAILS.includes(adminEmail)) {
       return res.status(403).send({ message: "Unauthorized" });
     }
 
     const count = parseInt(newCount);
-
-    // CSE Logic: If admin sets flags > 5, set priority to Low
     let newPriority = count > 5 ? "Low" : "Medium";
 
     const result = await complaintsCollection.updateOne(
@@ -597,23 +730,19 @@ app.patch("/api/complaints/mark-fake/:id", async (req, res) => {
   const { reporterEmail } = req.body;
 
   try {
-    // 1. Get the current complaint to check if it's already fake
     const complaint = await complaintsCollection.findOne({
       _id: new ObjectId(id),
     });
 
-    // Prevent double-penalizing if it's already Fake
     if (complaint.status === "Fake") {
       return res.send({ success: false, message: "Already marked as fake" });
     }
 
-    // 2. Mark as Fake
     await complaintsCollection.updateOne(
       { _id: new ObjectId(id) },
       { $set: { status: "Fake", priority: "Low" } },
     );
 
-    // 3. Penalty Logic
     const user = await usersCollection.findOne({ email: reporterEmail });
     if (user) {
       const newScore = Math.max(0, (user.trustScore || 0) - 50);
@@ -629,19 +758,16 @@ app.patch("/api/complaints/mark-fake/:id", async (req, res) => {
   }
 });
 
-// --- 6. UPDATE STATUS & RESTORE PENALTY ---
+// --- 6. STRICT UPDATE STATUS & RESTORE PENALTY ---
 app.patch("/api/complaints/status/:id", async (req, res) => {
   const { id } = req.params;
   const { status: newStatus, reporterEmail, adminEmail } = req.body;
 
-  // 1. Security Check
-  const ADMIN_EMAILS = ["ak01739394811@gmail.com", "your-email@gmail.com"];
   if (!ADMIN_EMAILS.includes(adminEmail)) {
     return res.status(403).send({ message: "Unauthorized" });
   }
 
   try {
-    // 2. Fetch the OLD data first to check if it WAS "Fake"
     const oldComplaint = await complaintsCollection.findOne({
       _id: new ObjectId(id),
     });
@@ -652,12 +778,49 @@ app.patch("/api/complaints/status/:id", async (req, res) => {
         .send({ success: false, message: "Complaint not found" });
     }
 
-    // 3. RESTORE LOGIC: If moving AWAY from Fake, give 50 points back
-    if (oldComplaint.status === "Fake" && newStatus !== "Fake") {
+    // Server-Side Strict Workflow Validation [cite: 32, 33]
+    const LIFECYCLE = [
+      "Open",
+      "In Review",
+      "Work in Progress",
+      "Resolved",
+      "Closed",
+    ];
+
+    let currentStatus =
+      oldComplaint.status === "pending"
+        ? "Open"
+        : oldComplaint.status || "Open";
+
+    if (newStatus !== "Fake" && currentStatus !== "Fake") {
+      const currentIndex = LIFECYCLE.indexOf(currentStatus);
+      const newIndex = LIFECYCLE.indexOf(newStatus);
+
+      if (newIndex !== currentIndex + 1 && newIndex !== currentIndex) {
+        return res.status(400).send({
+          success: false,
+          message:
+            "Invalid status transition. You must follow the exact lifecycle sequence.",
+        });
+      }
+    }
+
+    // --- TIMELINE LOGIC START ---
+    // Use "Reported" for UI clarity if the status is "Open"
+    const displayStatus = newStatus === "Open" ? "Reported" : newStatus;
+
+    const timelineEntry = {
+      status: displayStatus,
+      time: new Date(), // Captured at the moment of update
+      message: `Status updated by admin (${adminEmail})`,
+    };
+    // --- TIMELINE LOGIC END ---
+
+    // RESTORE LOGIC: If moving AWAY from Fake, restore Trust Score [cite: 24, 40]
+    if (currentStatus === "Fake" && newStatus !== "Fake") {
       const user = await usersCollection.findOne({ email: reporterEmail });
       if (user) {
-        // Cap the score at 100
-        const restoredScore = (user.trustScore || 0) + 50;
+        const restoredScore = Math.min(100, (user.trustScore || 0) + 50);
         await usersCollection.updateOne(
           { email: reporterEmail },
           { $set: { trustScore: restoredScore } },
@@ -665,15 +828,18 @@ app.patch("/api/complaints/status/:id", async (req, res) => {
       }
     }
 
-    // 4. Update the actual complaint status
+    // Update the complaint status AND push to the timeline array [cite: 31, 49]
     const result = await complaintsCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status: newStatus } },
+      {
+        $set: { status: newStatus },
+        $push: { timeline: timelineEntry },
+      },
     );
 
     res.send({
       success: true,
-      message: `Status updated to ${newStatus}. Score restored if applicable.`,
+      message: `Status updated to ${newStatus}. Timeline entry created.`,
       result,
     });
   } catch (error) {
