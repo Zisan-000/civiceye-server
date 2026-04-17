@@ -34,11 +34,13 @@ let complaintsCollection;
 let usersCollection;
 let ordersCollection;
 let workersCollection;
+let postsCollection;
 
 const store_id = process.env.STORE_ID;
 const store_passwd = process.env.STORE_PASSWORD;
 const is_live = false;
 const puppeteer = require("puppeteer");
+const HF_TOKEN = process.env.HF_Key;
 
 async function run() {
   try {
@@ -49,6 +51,7 @@ async function run() {
     usersCollection = database.collection("users");
     ordersCollection = database.collection("orders");
     workersCollection = database.collection("workers");
+    postsCollection = database.collection("posts");
 
     // --- ADD THE INDEXES HERE ---
     await complaintsCollection.createIndex(
@@ -1330,6 +1333,98 @@ app.get("/api/admin/community-stats", async (req, res) => {
   } catch (error) {
     res.status(500).send({ error: error.message });
   }
+});
+
+// Posts
+
+const checkToxicity = async (text) => {
+  try {
+    const response = await fetch(
+      "https://api-inference.huggingface.co/models/unitary/toxic-bert",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HF_Key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ inputs: text }),
+      },
+    );
+
+    const result = await response.json();
+
+    // DEBUG: See the actual AI scores in your terminal
+    console.log("AI Analysis Result:", JSON.stringify(result));
+
+    // Flatten the result in case it's nested [[...]] or just [...]
+    const predictions = Array.isArray(result[0]) ? result[0] : result;
+
+    if (predictions && Array.isArray(predictions)) {
+      // Look for ANY toxic label with a high score
+      const toxicMatch = predictions.find(
+        (item) =>
+          ["toxic", "severe_toxic", "insult", "threat"].includes(item.label) &&
+          item.score > 0.5, // Lowered threshold to 0.5 for stricter filtering
+      );
+
+      return !!toxicMatch; // Returns true if a match is found
+    }
+
+    return false;
+  } catch (error) {
+    console.error("HuggingFace API Error:", error);
+    return false;
+  }
+};
+
+app.post("/api/community/posts", async (req, res) => {
+  try {
+    const { content, userName, userEmail } = req.body;
+
+    if (!userName || !userEmail || !content) {
+      return res.status(400).send({
+        success: false,
+        message: "Identity verification failed. Please refresh and try again.",
+      });
+    }
+
+    // AI Toxicity Check
+    const isToxic = await checkToxicity(content);
+
+    const newPost = {
+      content,
+      userName,
+      userEmail,
+      isToxic: isToxic,
+      status: isToxic ? "Blocked" : "Published",
+      likes: 0,
+      createdAt: new Date(),
+    };
+
+    if (isToxic) {
+      // We still save it so the Admin can see the attempt, but we don't 'Publish' it
+      await postsCollection.insertOne(newPost);
+      return res.status(400).send({
+        success: false,
+        message: "Post blocked! Content violates community guidelines.",
+      });
+    }
+
+    await postsCollection.insertOne(newPost);
+    res.send({ success: true, message: "Post shared with the community!" });
+  } catch (error) {
+    res.status(500).send({ error: error.message });
+  }
+});
+
+// 3. Get Public Posts
+app.get("/api/community/posts", async (req, res) => {
+  // Only show posts that are NOT toxic
+  const posts = await postsCollection
+    .find({ isToxic: false })
+    .sort({ createdAt: -1 })
+    .toArray();
+  res.send(posts);
 });
 
 app.listen(port, () => {
