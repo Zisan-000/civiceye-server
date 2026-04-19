@@ -1339,40 +1339,19 @@ app.get("/api/admin/community-stats", async (req, res) => {
 
 const checkToxicity = async (text) => {
   try {
+    // encodeURIComponent ensures spaces and symbols don't break the URL
     const response = await fetch(
-      "https://api-inference.huggingface.co/models/unitary/toxic-bert",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${HF_Key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ inputs: text }),
-      },
+      `https://www.purgomalum.com/service/containsprofanity?text=${encodeURIComponent(text)}`,
     );
 
-    const result = await response.json();
+    // PurgoMalum returns the literal text "true" or "false"
+    const result = await response.text();
 
-    // DEBUG: See the actual AI scores in your terminal
-    console.log("AI Analysis Result:", JSON.stringify(result));
+    console.log(`Content Safety Check: ${text} -> Profane: ${result}`);
 
-    // Flatten the result in case it's nested [[...]] or just [...]
-    const predictions = Array.isArray(result[0]) ? result[0] : result;
-
-    if (predictions && Array.isArray(predictions)) {
-      // Look for ANY toxic label with a high score
-      const toxicMatch = predictions.find(
-        (item) =>
-          ["toxic", "severe_toxic", "insult", "threat"].includes(item.label) &&
-          item.score > 0.5, // Lowered threshold to 0.5 for stricter filtering
-      );
-
-      return !!toxicMatch; // Returns true if a match is found
-    }
-
-    return false;
+    return result === "true";
   } catch (error) {
-    console.error("HuggingFace API Error:", error);
+    console.error("PurgoMalum API Error:", error);
     return false;
   }
 };
@@ -1381,37 +1360,31 @@ app.post("/api/community/posts", async (req, res) => {
   try {
     const { content, userName, userEmail } = req.body;
 
-    if (!userName || !userEmail || !content) {
-      return res.status(400).send({
-        success: false,
-        message: "Identity verification failed. Please refresh and try again.",
-      });
-    }
+    if (!content) return res.status(400).send({ message: "Content is empty" });
 
-    // AI Toxicity Check
+    // AI/Filter Check
     const isToxic = await checkToxicity(content);
 
     const newPost = {
       content,
       userName,
       userEmail,
-      isToxic: isToxic,
+      isToxic,
       status: isToxic ? "Blocked" : "Published",
-      likes: 0,
       createdAt: new Date(),
     };
 
+    // Save to DB regardless (so Admin can see violations)
+    await postsCollection.insertOne(newPost);
+
     if (isToxic) {
-      // We still save it so the Admin can see the attempt, but we don't 'Publish' it
-      await postsCollection.insertOne(newPost);
       return res.status(400).send({
         success: false,
-        message: "Post blocked! Content violates community guidelines.",
+        message: "Post blocked! Please maintain a respectful community tone.",
       });
     }
 
-    await postsCollection.insertOne(newPost);
-    res.send({ success: true, message: "Post shared with the community!" });
+    res.send({ success: true, message: "Post shared successfully!" });
   } catch (error) {
     res.status(500).send({ error: error.message });
   }
@@ -1425,6 +1398,36 @@ app.get("/api/community/posts", async (req, res) => {
     .sort({ createdAt: -1 })
     .toArray();
   res.send(posts);
+});
+
+app.patch("/api/community/posts/like/:id", async (req, res) => {
+  const { id } = req.params;
+  const { userEmail } = req.body;
+
+  try {
+    const post = await postsCollection.findOne({ _id: new ObjectId(id) });
+
+    // Check if user already liked the post
+    const hasLiked = post.likes?.includes(userEmail);
+
+    let updateDoc;
+    if (hasLiked) {
+      // If already liked, remove (unlike)
+      updateDoc = { $pull: { likes: userEmail } };
+    } else {
+      // If not liked, add to array
+      updateDoc = { $addToSet: { likes: userEmail } };
+    }
+
+    const result = await postsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      updateDoc,
+    );
+
+    res.send({ success: true, isLiked: !hasLiked });
+  } catch (error) {
+    res.status(500).send({ error: error.message });
+  }
 });
 
 app.listen(port, () => {
