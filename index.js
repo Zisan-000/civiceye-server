@@ -12,7 +12,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:5173",
-      //"https://your-site-name.netlify.app" // Add this AFTER you get your Netlify link
+      "https://project-civiceye.netlify.app/", // Add this AFTER you get your Netlify link
     ],
     credentials: true,
   }),
@@ -42,34 +42,37 @@ const is_live = false;
 const puppeteer = require("puppeteer");
 const HF_TOKEN = process.env.HF_Key;
 
-async function run() {
-  try {
+let isConnected = false;
+
+async function connectDB() {
+  if (!isConnected) {
     await client.connect();
 
     const database = client.db("civicEyeDB");
+
     complaintsCollection = database.collection("complaints");
     usersCollection = database.collection("users");
     ordersCollection = database.collection("orders");
     workersCollection = database.collection("workers");
     postsCollection = database.collection("posts");
 
-    // --- ADD THE INDEXES HERE ---
-    await complaintsCollection.createIndex(
-      { location: "2d" },
-      { sparse: true },
-    );
-    await complaintsCollection.createIndex({
-      address: "text",
-      description: "text",
-    });
+    // Indexes (run once)
+    // await complaintsCollection.createIndex(
+    //   { location: "2d" },
+    //   { sparse: true },
+    // );
 
-    await client.db("admin").command({ ping: 1 });
-    console.log("Successfully connected to MongoDB and created Indexes!");
-  } catch (error) {
-    console.error("Database connection error:", error);
+    // await complaintsCollection.createIndex({
+    //   address: "text",
+    //   description: "text",
+    // });
+
+    isConnected = true;
+    console.log("✅ MongoDB connected");
   }
 }
-run().catch(console.dir);
+// await run();
+// run().catch(console.dir);
 
 const calculateUrgency = (prob) => {
   const now = new Date();
@@ -597,6 +600,7 @@ const CATEGORY_WEIGHTS = {
 // 6. Get All Complaints & Dynamically Calculate Urgency (Module 2)
 app.get("/api/complaints", async (req, res) => {
   try {
+    await connectDB();
     const complaints = await complaintsCollection.find().toArray();
     const complaintsWithUrgency = complaints.map((prob) => ({
       ...prob,

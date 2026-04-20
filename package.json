@@ -12,11 +12,14 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@sparticuz/chromium": "^147.0.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "mongodb": "^7.1.0",
-    "puppeteer": "^24.41.0",
+    "puppeteer": "^24.42.0",
+    "puppeteer-core": "^24.42.0",
+    "serverless-http": "^4.0.0",
     "sslcommerz-lts": "^1.2.0",
     "sslcommerz-nodejs": "^1.0.8",
     "vercel": "^50.37.2"
