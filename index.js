@@ -39,14 +39,16 @@ let postsCollection;
 const store_id = process.env.STORE_ID;
 const store_passwd = process.env.STORE_PASSWORD;
 const is_live = false;
-const puppeteer = require("puppeteer");
+// const puppeteer = require("puppeteer");
+const chromium = require("@sparticuz/chromium-min");
+const puppeteer = require("puppeteer-core");
 const HF_TOKEN = process.env.HF_Key;
 
 let isConnected = false;
 
 async function connectDB() {
   if (!isConnected) {
-    await client.connect();
+    // await client.connect();
 
     const database = client.db("civicEyeDB");
 
@@ -119,6 +121,7 @@ app.get("/", (req, res) => {
 // 1. Get User Profile & Trust Score
 app.get("/api/users/:email", async (req, res) => {
   try {
+    await connectDB();
     const email = req.params.email;
     let user = await usersCollection.findOne({ email });
 
@@ -641,6 +644,7 @@ app.patch("/api/complaints/update-images/:id", async (req, res) => {
 
 // --- WORKER IMAGE UPLOAD ROUTE ---
 app.patch("/api/complaints/update-status/:id", async (req, res) => {
+  await connectDB();
   const taskId = req.params.id;
   const { newStatus, workerEmail, message } = req.body;
 
@@ -671,6 +675,7 @@ app.patch("/api/complaints/update-status/:id", async (req, res) => {
 
 // 1. UPDATE STATUS (Admin Only) - Legacy route (Keep if used elsewhere, but ideally use /status/:id below)
 app.patch("/api/complaints/:id", async (req, res) => {
+  await connectDB();
   const { id } = req.params;
   const { status, adminEmail } = req.body;
 
@@ -688,6 +693,7 @@ app.patch("/api/complaints/:id", async (req, res) => {
 
 // 2. DELETE COMPLAINT (Admin Only)
 app.delete("/api/complaints/:id", async (req, res) => {
+  await connectDB();
   const { id } = req.params;
   const adminEmail = req.query.email;
 
@@ -1117,8 +1123,15 @@ app.patch("/api/complaints/resolve/:id", async (req, res) => {
 });
 
 app.get("/api/admin/generate-report", async (req, res) => {
+  let browser = null;
   try {
-    // 1. HELPER FUNCTION (Move this to the TOP of the route)
+    // A. CONNECT TO DATABASE (Ensure collections are available)
+    // Assuming you use your getDB or connectDB helper here
+    await client.connect();
+    const db = client.db("civicEyeDB");
+    const complaintsCollection = db.collection("complaints");
+
+    // B. HELPER FUNCTION
     const formatDuration = (hours) => {
       if (!hours || hours <= 0) return "0 Mins";
       if (hours < 1) return `${(hours * 60).toFixed(0)} Mins`;
@@ -1126,29 +1139,23 @@ app.get("/api/admin/generate-report", async (req, res) => {
       return `${hours.toFixed(1)} Hours`;
     };
 
-    // 2. DATA CALCULATIONS
+    // C. DATA CALCULATIONS (Same as your code)
     const allComplaints = await complaintsCollection.find({}).toArray();
     const resolvedComplaints = allComplaints.filter(
       (c) => c.status === "Resolved" && c.timeline,
     );
-
     const totalComplaints = allComplaints.length;
-
-    // Top 3 Issues by Upvotes
     const topIssues = [...allComplaints]
       .sort((a, b) => (b.upvotes || 0) - (a.upvotes || 0))
       .slice(0, 3);
 
-    // Resolution Times Logic
     const resolutionStats = resolvedComplaints
       .map((c) => {
         const start = new Date(c.createdAt);
         const endEvent = c.timeline?.find((t) => t.status === "Resolved");
         const end = endEvent ? new Date(endEvent.time) : new Date();
-
         const diffInMs = end - start;
         const durationHours = diffInMs / (1000 * 60 * 60);
-
         return {
           category: c.category || "General",
           duration: durationHours > 0 ? durationHours : 0.01,
@@ -1162,72 +1169,133 @@ app.get("/api/admin/generate-report", async (req, res) => {
       duration: 0,
     };
 
-    // 3. HTML TEMPLATE (Now it can find formatDuration)
-    const htmlContent = `
-      <html>
+    // D. HTML TEMPLATE (Your template)
+    const htmlContent = `<html>
+
         <head>
+
           <style>
+
             body { font-family: 'Helvetica', sans-serif; padding: 40px; color: #333; }
+
             .header { text-align: center; border-bottom: 4px solid #3b82f6; padding-bottom: 20px; }
+
             .stat-card { background: #f3f4f6; padding: 20px; border-radius: 15px; margin: 20px 0; }
+
             .grid { display: flex; justify-content: space-between; gap: 20px; }
+
             table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+
             th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
+
             th { background-color: #3b82f6; color: white; }
+
             .highlight { color: #3b82f6; font-weight: bold; }
+
           </style>
+
         </head>
+
         <body>
+
           <div class="header">
+
             <h1>CivicEye: Monthly Society Report</h1>
+
             <p>Generated on: ${new Date().toLocaleDateString()}</p>
+
           </div>
+
+
 
           <div class="stat-card">
+
             <h2>Summary</h2>
+
             <p>Total Complaints Logged: <span class="highlight">${totalComplaints}</span></p>
+
           </div>
+
+
 
           <h3>Top 3 High-Priority Issues (By Upvotes)</h3>
+
           <table>
+
             <tr><th>Issue Category</th><th>Upvotes</th><th>Location</th></tr>
+
             ${topIssues
+
               .map(
                 (t) => `
+
               <tr>
+
                 <td>${(t.category || "General").toUpperCase()}</td>
+
                 <td>${t.upvotes || 0}</td>
+
                 <td>${t.region || t.address || "N/A"}</td>
+
               </tr>`,
               )
+
               .join("")}
+
           </table>
 
-          <h3>Efficiency Metrics</h3>
-          <div class="grid">
-            <div class="stat-card" style="flex: 1; border-left: 5px solid #22c55e;">
-              <p><b>Fastest Resolution</b></p>
-              <p><span class="highlight">${(fastest.category || "N/A").toUpperCase()}</span></p>
-              <p>${formatDuration(fastest.duration)}</p>
-            </div>
-            <div class="stat-card" style="flex: 1; border-left: 5px solid #ef4444;">
-              <p><b>Slowest Resolution</b></p>
-              <p><span class="highlight">${(slowest.category || "N/A").toUpperCase()}</span></p>
-              <p>${formatDuration(slowest.duration)}</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
 
-    // 4. GENERATE PDF
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"], // Good for deployment
+
+          <h3>Efficiency Metrics</h3>
+
+          <div class="grid">
+
+            <div class="stat-card" style="flex: 1; border-left: 5px solid #22c55e;">
+
+              <p><b>Fastest Resolution</b></p>
+
+              <p><span class="highlight">${(fastest.category || "N/A").toUpperCase()}</span></p>
+
+              <p>${formatDuration(fastest.duration)}</p>
+
+            </div>
+
+            <div class="stat-card" style="flex: 1; border-left: 5px solid #ef4444;">
+
+              <p><b>Slowest Resolution</b></p>
+
+              <p><span class="highlight">${(slowest.category || "N/A").toUpperCase()}</span></p>
+
+              <p>${formatDuration(slowest.duration)}</p>
+
+            </div>
+
+          </div>
+
+        </body>
+
+      </html>`;
+
+    // E. VERCEL-COMPATIBLE BROWSER LAUNCH
+    const isProd = process.env.NODE_ENV === "production";
+
+    browser = await puppeteer.launch({
+      args: isProd
+        ? chromium.args
+        : ["--no-sandbox", "--disable-setuid-sandbox"],
+      // Note: Replace the URL below with the latest version if needed
+      executablePath: isProd
+        ? await chromium.executablePath(
+            "https://github.com/Sparticuz/chromium/releases/download/v123.0.1/chromium-v123.0.1-pack.tar",
+          )
+        : "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", // Path for your Windows PC
+      headless: isProd ? chromium.headless : true,
     });
+
     const page = await browser.newPage();
-    await page.setContent(htmlContent);
+    await page.setContent(htmlContent, { waitUntil: "networkidle0" });
     const pdfBuffer = await page.pdf({ format: "A4", printBackground: true });
+
     await browser.close();
 
     res.contentType("application/pdf");
@@ -1235,6 +1303,7 @@ app.get("/api/admin/generate-report", async (req, res) => {
     res.send(pdfBuffer);
   } catch (error) {
     console.error("PDF Error:", error);
+    if (browser) await browser.close();
     res.status(500).send({ error: error.message });
   }
 });
