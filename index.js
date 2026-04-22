@@ -1310,7 +1310,7 @@ app.get("/api/admin/generate-report", async (req, res) => {
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
-    await client.connect();
+    // await client.connect();
     const leaderboard = await complaintsCollection
       .aggregate([
         {
@@ -1324,7 +1324,7 @@ app.get("/api/leaderboard", async (req, res) => {
             },
           },
         },
-        { $sort: { totalUpvotes: -1 } }, // Rank by upvotes or reports
+        { $sort: { totalUpvotes: -1 } },
         { $limit: 10 },
       ])
       .toArray();
@@ -1508,5 +1508,5 @@ app.patch("/api/community/posts/like/:id", async (req, res) => {
 });
 
 app.listen(port, () => {
-  //console.log(`Server is running on port ${port}`);
+  // console.log(`Server is running on port ${port}`);
 });
