@@ -519,10 +519,10 @@ app.post("/payment", async (req, res) => {
     total_amount: 500,
     currency: "BDT",
     tran_id: current_tran_id,
-    success_url: `http://localhost:1069/payment/success/${current_tran_id}`,
-    fail_url: "http://localhost:1069/payment/fail",
-    cancel_url: "http://localhost:1069/payment/cancel",
-    ipn_url: "http://localhost:1069/ipn",
+    success_url: `https://civiceye-server.vercel.app/payment/success/${current_tran_id}`,
+    fail_url: "https://civiceye-server.vercel.app/payment/fail",
+    cancel_url: "https://civiceye-server.vercel.app/payment/cancel",
+    ipn_url: "https://civiceye-server.vercel.app/ipn",
     shipping_method: "No",
     product_name: "Trust Score Fine",
     product_category: "Service",
@@ -551,7 +551,9 @@ app.post("/payment/success/:tranId", async (req, res) => {
 
     if (!orderRecord) {
       console.error("❌ No matching order found for TranID:", tranId);
-      return res.redirect("http://localhost:5173/profile?status=error");
+      return res.redirect(
+        "https://project-civiceye.netlify.app/profile?status=error",
+      );
     }
 
     if (paymentData.status === "VALID") {
@@ -565,11 +567,13 @@ app.post("/payment/success/:tranId", async (req, res) => {
       );
 
       //console.log(`✅ Score restored for ${orderRecord.userEmail}`);
-      res.redirect(`http://localhost:5173/profile?status=success`);
+      res.redirect(
+        `https://project-civiceye.netlify.app/profile?status=success`,
+      );
     }
   } catch (error) {
     console.error("🔥 Error:", error);
-    res.redirect("http://localhost:5173/profile?status=error");
+    res.redirect("https://project-civiceye.netlify.app/profile?status=error");
   }
 });
 
@@ -583,12 +587,12 @@ app.post("/payment/fail", async (req, res) => {
       { $set: { status: "failed", error: paymentData.error } },
     );
   }
-  res.redirect("http://localhost:5173/profile?status=failed");
+  res.redirect("https://project-civiceye.netlify.app/profile?status=failed");
 });
 
 app.post("/payment/cancel", async (req, res) => {
   //console.log("⚠️ Payment Cancelled by user");
-  res.redirect("http://localhost:5173/profile?status=cancelled");
+  res.redirect("https://project-civiceye.netlify.app/profile?status=cancelled");
 });
 
 const CATEGORY_WEIGHTS = {
