@@ -70,7 +70,7 @@ async function connectDB() {
     // });
 
     isConnected = true;
-    console.log("✅ MongoDB connected");
+    //console.log("✅ MongoDB connected");
   }
 }
 // await run();
@@ -538,7 +538,7 @@ app.post("/payment", async (req, res) => {
   sslcz.init(data).then((apiResponse) => {
     let GatewayPageURL = apiResponse.GatewayPageURL;
     res.send({ url: GatewayPageURL });
-    console.log("Redirecting user to:", GatewayPageURL);
+    //console.log("Redirecting user to:", GatewayPageURL);
   });
 });
 
@@ -564,7 +564,7 @@ app.post("/payment/success/:tranId", async (req, res) => {
         { $set: { status: "success", paymentTime: new Date() } },
       );
 
-      console.log(`✅ Score restored for ${orderRecord.userEmail}`);
+      //console.log(`✅ Score restored for ${orderRecord.userEmail}`);
       res.redirect(`http://localhost:5173/profile?status=success`);
     }
   } catch (error) {
@@ -575,7 +575,7 @@ app.post("/payment/success/:tranId", async (req, res) => {
 
 app.post("/payment/fail", async (req, res) => {
   const paymentData = req.body;
-  console.log("❌ Payment Failed. Reason:", paymentData.error);
+  //console.log("❌ Payment Failed. Reason:", paymentData.error);
 
   if (paymentData.tran_id) {
     await ordersCollection.updateOne(
@@ -587,7 +587,7 @@ app.post("/payment/fail", async (req, res) => {
 });
 
 app.post("/payment/cancel", async (req, res) => {
-  console.log("⚠️ Payment Cancelled by user");
+  //console.log("⚠️ Payment Cancelled by user");
   res.redirect("http://localhost:5173/profile?status=cancelled");
 });
 
@@ -1310,6 +1310,7 @@ app.get("/api/admin/generate-report", async (req, res) => {
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
+    await client.connect();
     const leaderboard = await complaintsCollection
       .aggregate([
         {
@@ -1329,15 +1330,18 @@ app.get("/api/leaderboard", async (req, res) => {
       .toArray();
 
     // Map the badges based on the logic
-    const results = leaderboard.map((user) => ({
-      ...user,
-      badges: [
-        user.totalReports >= 10 ? "Eagle Eye" : null,
-        user.totalUpvotes >= 50 ? "Community Guardian" : null,
-        user.totalReports >= 5 ? "Active Citizen" : null,
-        user.totalUpvotes / user.totalReports > 10 ? "Impact Maker" : null,
-      ].filter(Boolean),
-    }));
+    const results = leaderboard.map((user) => {
+      const total = user.totalReports || 1;
+      return {
+        ...user,
+        badges: [
+          user.totalReports >= 10 ? "Eagle Eye" : null,
+          user.totalUpvotes >= 50 ? "Community Guardian" : null,
+          user.totalReports >= 5 ? "Active Citizen" : null,
+          user.totalUpvotes / total > 10 ? "Impact Maker" : null,
+        ].filter(Boolean),
+      };
+    });
 
     res.send(results);
   } catch (error) {
@@ -1420,7 +1424,7 @@ const checkToxicity = async (text) => {
     // PurgoMalum returns the literal text "true" or "false"
     const result = await response.text();
 
-    console.log(`Content Safety Check: ${text} -> Profane: ${result}`);
+    //console.log(`Content Safety Check: ${text} -> Profane: ${result}`);
 
     return result === "true";
   } catch (error) {
@@ -1504,5 +1508,5 @@ app.patch("/api/community/posts/like/:id", async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  //console.log(`Server is running on port ${port}`);
 });
